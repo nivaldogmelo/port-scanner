@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 )
+
+const maxPort = 65535
+const timeout = 300 * time.Millisecond
 
 type Job struct {
 	server string
@@ -15,46 +17,49 @@ type Job struct {
 }
 
 var available []int
-var jobs = make(chan Job, 10)
 
 func createWorkerPool(noOfWorkers int) {
 	var wg sync.WaitGroup
+	jobs := make(chan Job, noOfWorkers)
+
 	for i := 0; i < noOfWorkers; i++ {
 		wg.Add(1)
-		go worker(&wg)
+		go worker(&wg, jobs)
 	}
+
+	for i := 1; i <= maxPort; i++ {
+		job := Job{server: os.Args[1], port: i}
+		jobs <- job
+	}
+
+	close(jobs)
 	wg.Wait()
 }
 
-func worker(wg *sync.WaitGroup) {
-	for job := range jobs {
-		ip := job.server + ":" + strconv.Itoa(job.port)
+func worker(wg *sync.WaitGroup, jobs <-chan Job) {
+	defer wg.Done()
 
-		_, err := net.DialTimeout("tcp", ip, time.Duration(300)*time.Millisecond)
+	for job := range jobs {
+		ip := fmt.Sprintf("%s:%d", job.server, job.port)
+
+		conn, err := net.DialTimeout("tcp", ip, timeout)
 		if err == nil {
+			conn.Close()
 			available = append(available, job.port)
 		}
 	}
-
-	wg.Done()
-}
-
-func PortScan(done chan bool, server string) {
-	for i := 1; i <= 65535; i++ {
-		job := Job{server, i}
-		jobs <- job
-	}
-	close(jobs)
-	done <- true
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: ./portscanner <hostname>")
+		os.Exit(1)
+	}
+
 	fmt.Println("Checking for available ports...")
-	done := make(chan bool)
-	go PortScan(done, os.Args[1])
+
 	noOfWorkers := 100
 	createWorkerPool(noOfWorkers)
-	<-done
 
-	fmt.Println("Ports available: ", available)
+	fmt.Println("Ports available:", available)
 }
